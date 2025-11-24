@@ -1,25 +1,62 @@
 import { getLogger } from '@logtape/logtape';
-import { and, eq, gte, inArray, sql } from 'drizzle-orm';
+import { eq, gte, inArray, sql } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { StatusCodes } from 'http-status-codes';
 import { db } from '~/database';
 import {
-  cohort,
   lesson,
   lessonCohortMTM,
   substitution,
   substitutionLessonMTM,
   teacher,
 } from '~/database/schema/timetable';
+import { loadSubstitutionsForCohort } from '~/database/timetable-loader';
+import { pub } from '~/mqtt/client';
 import { env } from '~/utils/environment';
 import type { SuccessResponse } from '~/utils/globals';
 import {
   requireAuthentication,
   requireAuthorization,
 } from '~/utils/middleware';
+import timetableCache from '~/utils/timetable-cache';
 import { timetableFactory } from '../_factory';
 
 const logger = getLogger(['chronos', 'substitutions']);
+
+// Helper: invalidate cohorts for given lesson ids (local cache + publish MQTT)
+async function invalidateCohortsForLessonIds(lessonIds: string[] | undefined) {
+  if (!lessonIds || lessonIds.length === 0) {
+    return;
+  }
+  try {
+    const cohortRows = await db
+      .select({ cohortId: lessonCohortMTM.cohortId })
+      .from(lessonCohortMTM)
+      .where(inArray(lessonCohortMTM.lessonId, lessonIds));
+
+    const cohortIds = cohortRows
+      .map(
+        (r: { cohortId?: string; cohort_id?: string }) =>
+          r.cohortId ?? r.cohort_id
+      )
+      .filter(Boolean) as string[];
+
+    for (const cid of cohortIds) {
+      timetableCache.invalidateCohort(cid);
+    }
+
+    try {
+      pub(
+        'chronos/timetable/invalidate',
+        JSON.stringify({ cohortIds, ts: Date.now() })
+      );
+    } catch (err) {
+      logger.warn('Failed to publish mqtt invalidation', { err });
+    }
+  } catch (err) {
+    logger.warn('Failed to invalidate cohorts', { err });
+  }
+}
 
 export const getAllSubstitutions = timetableFactory.createHandlers(
   requireAuthentication,
@@ -102,31 +139,28 @@ export const getRelevantSubstitutionsForCohort =
       });
     }
 
-    const today = new Date().toISOString().split('T')[0];
+    // no-op
 
     try {
-      const substitutions = await db
-        .select({
-          lessons: sql<string[]>`COALESCE(
-            ARRAY_AGG(${substitutionLessonMTM.lessonId}) FILTER (WHERE ${substitutionLessonMTM.lessonId} IS NOT NULL),
-            ARRAY[]::text[]
-          )`.as('lessons'),
-          substitution,
-          teacher,
-        })
-        .from(substitution)
-        .leftJoin(teacher, eq(substitution.substituter, teacher.id))
-        .leftJoin(
-          substitutionLessonMTM,
-          eq(substitution.id, substitutionLessonMTM.substitutionId)
-        )
-        .leftJoin(lesson, eq(substitutionLessonMTM.lessonId, lesson.id))
-        .leftJoin(lessonCohortMTM, eq(lesson.id, lessonCohortMTM.lessonId))
-        .leftJoin(cohort, eq(lessonCohortMTM.cohortId, cohort.id))
-        .where(
-          and(gte(substitution.date, today as string), eq(cohort.id, cohortId))
-        )
-        .groupBy(substitution.id, teacher.id);
+      const cached = timetableCache.getCachedSubstitutionsForCohort(cohortId);
+      if (cached) {
+        return c.json<SuccessResponse>({
+          data: {
+            cohortId,
+            substitutions: cached,
+          },
+          success: true,
+        });
+      }
+
+      const substitutions = await loadSubstitutionsForCohort(cohortId);
+
+      // populate cache with latest known substitutions (best-effort)
+      try {
+        timetableCache.setSubstitutionsForCohort(cohortId, substitutions);
+      } catch (_err) {
+        // noop
+      }
 
       return c.json<SuccessResponse>({
         data: {
@@ -206,6 +240,9 @@ export const createSubstitution = timetableFactory.createHandlers(
 
       return insertedSubstitution;
     });
+
+    // Invalidate local cache for cohorts that are affected by these lessons.
+    await invalidateCohortsForLessonIds(lessonIds);
 
     return c.json<SuccessResponse>({
       data: result,
@@ -296,6 +333,35 @@ export const updateSubstitution = timetableFactory.createHandlers(
         return updated;
       });
 
+      // Invalidate cohorts impacted by this substitution update. Determine
+      // lesson ids either from the request body (if provided) or from the
+      // existing many-to-many table.
+      try {
+        let lessonIdsForSub: string[] = [];
+        if (body.lessonIds) {
+          lessonIdsForSub = body.lessonIds;
+        } else {
+          const rows = await db
+            .select({ lessonId: substitutionLessonMTM.lessonId })
+            .from(substitutionLessonMTM)
+            .where(eq(substitutionLessonMTM.substitutionId, id));
+          lessonIdsForSub = rows
+            .map(
+              (r: { lessonId?: string; lesson_id?: string }) =>
+                r.lessonId ?? r.lesson_id
+            )
+            .filter(Boolean) as string[];
+        }
+
+        if (lessonIdsForSub.length) {
+          await invalidateCohortsForLessonIds(lessonIdsForSub);
+        }
+      } catch (err) {
+        logger.warn('Failed to invalidate cohorts after updateSubstitution', {
+          err,
+        });
+      }
+
       return c.json<SuccessResponse>({
         data: updatedSubstitution,
         success: true,
@@ -336,11 +402,34 @@ export const deleteSubstitution = timetableFactory.createHandlers(
         });
       }
 
-      // The many-to-many relationships will be automatically deleted due to the CASCADE constraint
+      // Determine affected lesson ids before delete so we can invalidate
+      // corresponding cohort caches after the deletion.
+      const lessonRows = await db
+        .select({ lessonId: substitutionLessonMTM.lessonId })
+        .from(substitutionLessonMTM)
+        .where(eq(substitutionLessonMTM.substitutionId, id));
+
+      const lessonIds = lessonRows
+        .map(
+          (r: { lessonId?: string; lesson_id?: string }) =>
+            r.lessonId ?? r.lesson_id
+        )
+        .filter(Boolean) as string[];
+
       const [deletedSubstitution] = await db
         .delete(substitution)
         .where(eq(substitution.id, id))
         .returning();
+
+      try {
+        if (lessonIds.length) {
+          await invalidateCohortsForLessonIds(lessonIds);
+        }
+      } catch (err) {
+        logger.warn('Failed to invalidate cohorts after deleteSubstitution', {
+          err,
+        });
+      }
 
       return c.json<SuccessResponse>({
         data: deletedSubstitution,

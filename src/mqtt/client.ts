@@ -14,6 +14,10 @@ import { handleFeatureFlag } from '~/utils/feature-flag';
 const logger = getLogger(['chronos', 'mqtt']);
 
 let client: MqttClient | null = null;
+const topicHandlers: Array<{
+  pattern: string;
+  handler: (topic: string, payload: Buffer) => Promise<void>;
+}> = [];
 
 const connectMqtt = () => {
   if (client) {
@@ -47,6 +51,19 @@ const connectMqtt = () => {
 
   client.on('message', async (topic, payload) => {
     await handleIncomingMessage(topic, payload);
+    // Dispatch to registered handlers (prefix match)
+    for (const { pattern, handler } of topicHandlers) {
+      try {
+        if (pattern === '#' || topic.startsWith(pattern)) {
+          // don't await here to avoid blocking the mqtt loop
+          handler(topic, payload).catch((err) =>
+            logger.warn('mqtt handler error', { err, pattern, topic })
+          );
+        }
+      } catch (err) {
+        logger.warn('mqtt handler threw', { err, pattern, topic });
+      }
+    }
   });
 };
 
@@ -105,6 +122,14 @@ export const pub = (topic: string, message: string): void => {
       logger.debug(`Message published to ${topic}`);
     }
   });
+};
+
+// Allow other modules to register topic handlers. Pattern is a prefix or '#'.
+export const registerMqttHandler = (
+  pattern: string,
+  handler: (topic: string, payload: Buffer) => Promise<void>
+): void => {
+  topicHandlers.push({ handler, pattern });
 };
 
 export const openDoorLock = (

@@ -23,6 +23,10 @@ import type { Context, ErrorResponse } from '~/utils/globals';
 import { configureLogger } from '~/utils/logger';
 import { authenticationMiddleware } from '~/utils/middleware';
 import { securityMiddleware } from '~/utils/security';
+import {
+  initializeTimetableCache,
+  stopTimetableCache,
+} from '~/utils/timetable-cache';
 
 await configureLogger('chronos');
 const logger = getLogger(['chronos', 'server']);
@@ -144,6 +148,8 @@ app.onError((err, c) => {
 const handleStartup = async () => {
   await prepareDb();
   await initializeRBAC();
+  // Preload timetables and substitutions for all cohorts to avoid first-request latency
+  await initializeTimetableCache({ preload: true });
   await initializeMqttClient();
   await startDeviceMonitor();
 
@@ -164,6 +170,7 @@ const handleStartup = async () => {
 const handleShutdown = () => {
   logger.info('Shutting down chronos...');
   handleMqttShutdown();
+  stopTimetableCache();
   stopDeviceMonitor();
   logger.info('Shutdown complete, exiting.');
   process.exit(0);
