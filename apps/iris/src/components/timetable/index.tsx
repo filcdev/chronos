@@ -8,7 +8,10 @@ import { useTranslation } from 'react-i18next';
 import type z from 'zod';
 import { FilterBar } from '@/components/timetable/filter-bar';
 import { TimetableGrid } from '@/components/timetable/grid';
-import { buildViewModel } from '@/components/timetable/helpers';
+import {
+  buildViewModel,
+  filterLessonsForGroupDisplay,
+} from '@/components/timetable/helpers';
 import { TimetablePDF } from '@/components/timetable/pdf/document';
 import { PrintDialog } from '@/components/timetable/print-dialog';
 import { TimetableCardView } from '@/components/timetable/secondary';
@@ -238,7 +241,11 @@ export function TimetableView() {
   );
 
   // Group highlighting applies to a signed-in student viewing their own class.
-  const showGroupHandling = isAuthenticated && activeFilter === 'class';
+  const showGroupHandling =
+    isAuthenticated &&
+    activeFilter === 'class' &&
+    selections.class !== null &&
+    selections.class === session?.user?.cohortId;
   const { groupDisplay, selectedDivisionTags, selectedGroupIds } =
     useTimetableGroupDisplay(
       showGroupHandling ? selections.class : null,
@@ -395,6 +402,17 @@ export function TimetableView() {
     [lessonsQuery.data, periodsQuery.data, i18n.language]
   );
 
+  const cardLessons = useMemo(
+    () =>
+      filterLessonsForGroupDisplay(
+        (lessonsQuery.data ?? []) as LessonItem[],
+        groupDisplay,
+        selectedGroupIds,
+        selectedDivisionTags
+      ),
+    [lessonsQuery.data, groupDisplay, selectedGroupIds, selectedDivisionTags]
+  );
+
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
 
   const getSelectionLabel = (): string => {
@@ -493,7 +511,7 @@ export function TimetableView() {
     {
       header: cardHeader,
       language: i18n.language,
-      lessons: (lessonsQuery.data ?? []) as LessonItem[],
+      lessons: cardLessons,
       periods: (periodsQuery.data ?? []) as PeriodItem[],
     },
     {

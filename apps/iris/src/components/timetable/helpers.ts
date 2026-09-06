@@ -114,6 +114,61 @@ const formatCohort = (cohort: LessonItem['cohorts'][number]): string => {
 export const formatCohorts = (cohorts: LessonItem['cohorts']): string =>
   (cohorts ?? []).map(formatCohort).filter(Boolean).join(', ');
 
+export type GroupDisplay = 'highlight' | 'hide' | 'none';
+export type GroupEmphasis = 'mine' | 'dim' | 'neutral';
+
+/** Determine emphasis for a lesson based on selected groups and divisions */
+export const getLessonGroupEmphasis = (
+  lesson: LessonItem,
+  selectedGroupIds?: Set<string>,
+  selectedDivisionTags?: Set<string>
+): GroupEmphasis => {
+  const hasSelection = (selectedGroupIds?.size ?? 0) > 0;
+
+  if (!hasSelection) {
+    return 'neutral';
+  }
+
+  const groups = lesson.groups ?? [];
+
+  if (groups.length === 0) {
+    return 'neutral';
+  }
+
+  if (groups.some((group) => selectedGroupIds?.has(group.id))) {
+    return 'mine';
+  }
+
+  if (
+    groups.some((group) => {
+      const tag = group.divisionTag;
+      return tag !== null && selectedDivisionTags?.has(tag);
+    })
+  ) {
+    return 'dim';
+  }
+
+  return 'neutral';
+};
+
+/** Filter lessons based on group display settings */
+export const filterLessonsForGroupDisplay = (
+  lessons: LessonItem[],
+  groupDisplay: GroupDisplay,
+  selectedGroupIds?: Set<string>,
+  selectedDivisionTags?: Set<string>
+): LessonItem[] => {
+  if (groupDisplay !== 'hide') {
+    return lessons;
+  }
+
+  return lessons.filter(
+    (lesson) =>
+      getLessonGroupEmphasis(lesson, selectedGroupIds, selectedDivisionTags) !==
+      'dim'
+  );
+};
+
 /** Process a single lesson into the grid structure */
 const processLesson = (
   lesson: LessonItem,
