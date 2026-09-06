@@ -1,11 +1,13 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/utils';
+import {
+  filterLessonsForGroupDisplay,
+  type GroupDisplay,
+  getLessonGroupEmphasis,
+} from './helpers';
 import { LessonCard } from './lesson-card';
-import type { FilterType, LessonItem, TimetableViewModel } from './types';
-
-type GroupDisplay = 'highlight' | 'hide' | 'none';
-type GroupEmphasis = 'mine' | 'dim' | 'neutral';
+import type { FilterType, TimetableViewModel } from './types';
 
 type TimetableGridProps = {
   model: TimetableViewModel;
@@ -34,29 +36,6 @@ export function TimetableGrid({
   const { t } = useTranslation();
   const showCohorts =
     activeFilter === 'teacher' || activeFilter === 'classroom';
-  const hasSelection = (selectedGroupIds?.size ?? 0) > 0;
-
-  const classifyLesson = (lesson: LessonItem): GroupEmphasis => {
-    if (!hasSelection) {
-      return 'neutral';
-    }
-    const groups = lesson.groups ?? [];
-    if (groups.length === 0) {
-      return 'neutral';
-    }
-    if (groups.some((group) => selectedGroupIds?.has(group.id))) {
-      return 'mine';
-    }
-    if (
-      groups.some((group) => {
-        const tag = group.divisionTag;
-        return tag !== null && selectedDivisionTags?.has(tag);
-      })
-    ) {
-      return 'dim';
-    }
-    return 'neutral';
-  };
 
   const emptyDayKeys = useMemo(
     () =>
@@ -146,12 +125,13 @@ export function TimetableGrid({
                 {days.map((day, i) => {
                   const cellKey = `${day.key}-${slot.start.format('HH:mm')}`;
                   const rawLessons = grid.get(cellKey)?.lessons ?? [];
-                  const lessons =
-                    groupDisplay === 'hide'
-                      ? rawLessons.filter(
-                          (lesson) => classifyLesson(lesson) !== 'dim'
-                        )
-                      : rawLessons;
+
+                  const lessons = filterLessonsForGroupDisplay(
+                    rawLessons,
+                    groupDisplay,
+                    selectedGroupIds,
+                    selectedDivisionTags
+                  );
                   const isEmptyDay = emptyDayKeys.has(day.key);
                   const borderClass =
                     i < days.length - 1 ? 'border-border border-r-2' : '';
@@ -195,7 +175,11 @@ export function TimetableGrid({
                         key={cellKey}
                       >
                         <LessonCard
-                          emphasis={classifyLesson(firstLesson)}
+                          emphasis={getLessonGroupEmphasis(
+                            firstLesson,
+                            selectedGroupIds,
+                            selectedDivisionTags
+                          )}
                           lesson={firstLesson}
                           onColorChange={onColorChange}
                           showCohorts={showCohorts}
@@ -218,7 +202,11 @@ export function TimetableGrid({
                       >
                         {lessons.map((lesson, idx) => (
                           <LessonCard
-                            emphasis={classifyLesson(lesson)}
+                            emphasis={getLessonGroupEmphasis(
+                              lesson,
+                              selectedGroupIds,
+                              selectedDivisionTags
+                            )}
                             key={lesson.id ?? idx}
                             lesson={lesson}
                             onColorChange={onColorChange}
