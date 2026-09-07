@@ -7,6 +7,13 @@
 - [packages/api](packages/api) is the shared API contract package (`@filcdev/api`): zod wire schemas per domain, envelope/error types, permission constants, and a typed client factory consumed by Chronos and Iris alike. Future apps calling the Chronos API should depend on this package instead of the Chronos workspace.
 - [apps/iris](apps/iris) is the React + Vite frontend.
 
+## Graphify — Default Code Memory
+
+- The repo knowledge graph in `graphify-out/` (`graph.json`, `GRAPH_REPORT.md`) is the **default memory for codebase facts** in this repository. Before answering questions about how code fits together ("how does X work?", "what calls Y?", "which files share Z?", cross-file data flow), query it first with `graphify query "<question>"` or consult `graphify-out/GRAPH_REPORT.md`; do not rely on memory of prior sessions.
+- graphify is the authoritative store for code-structure knowledge. Do NOT duplicate durable code facts into the shared memory stack (memory graph, MEMORY.md, DECISIONS.md); persist those only when they are decisions/conventions, not structure.
+- The graph stays fresh via the installed post-commit/post-checkout hooks (rebuild after commits, code-file changes only). After doc/image changes or a large refactor, refresh manually from the repo root: `graphify --update`. If a question touches recently-changed code and the graph looks stale, rebuild rather than answer from memory.
+- `graphify-out/` is generated and git-ignored — never hand-edit it, never commit it.
+
 ## Commands
 
 - Use `bun` only. Do not switch to `npm`, `pnpm`, or `yarn`.
